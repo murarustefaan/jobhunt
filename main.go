@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/murarustefaan/jobhunt/cmd/work"
+	"log/slog"
 	"sync"
 )
 
@@ -11,8 +12,8 @@ const (
 
 func main() {
 	//var wq queue.WorkScheduler[string] = queue.NewMemoryQueue[string]()
-	inputs := make(chan string)
-	results := make(chan string, NumWorkers)
+	inputs := make(chan work.Url, 1000)
+	results := make(chan work.CrawlResponse, NumWorkers)
 	done := make(chan bool, NumWorkers)
 	wg := &sync.WaitGroup{}
 
@@ -20,8 +21,18 @@ func main() {
 		for {
 			select {
 			case result := <-results:
-				println("result:", result)
+				if result.Err != nil {
+					slog.Error("failed to crawl", "error", result.Err)
+					inputs <- result.Urls[0]
+					continue
+				}
+
+				for _, url := range result.Urls {
+					slog.Info("scheduling next url", "url", url)
+					inputs <- url
+				}
 			}
+
 		}
 	}()
 
@@ -32,7 +43,7 @@ func main() {
 	}
 
 	for _, endpoint := range STARTING_ENDPOINTS {
-		inputs <- endpoint
+		inputs <- work.Url(endpoint)
 	}
 	wg.Done()
 

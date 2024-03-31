@@ -1,12 +1,13 @@
 package work
 
 import (
-	"fmt"
+	"github.com/mvdan/xurls"
+	"io"
 	"log/slog"
-	"math/rand"
+	"net/http"
 	"os"
-	"strconv"
 	"sync"
+	"time"
 )
 
 type Worker struct {
@@ -23,7 +24,7 @@ func NewWorker(wg *sync.WaitGroup) *Worker {
 	}
 }
 
-func (w *Worker) Go(inputs chan string, results chan<- string, done <-chan bool) {
+func (w *Worker) Go(inputs chan Url, results chan<- CrawlResponse, done <-chan bool) {
 	log := w.logger
 	log.Info("worker started")
 
@@ -35,25 +36,48 @@ func (w *Worker) Go(inputs chan string, results chan<- string, done <-chan bool)
 
 		case endpoint := <-inputs:
 			w.logger.Info("worker processing item", "endpoint", endpoint)
-			result, err := w.processItem(endpoint)
+			urls, err := w.crawlEndpoint(endpoint)
 			if err != nil {
 				log.Error("worker failed to process item", "error", err)
 				log.Info("re-queueing item", "endpoint", endpoint)
-				inputs <- endpoint
+
+				results <- CrawlResponse{
+					Urls: []Url{endpoint},
+					Err:  err,
+				}
 				continue
 			}
 
-			results <- result
+			nextUrls := make([]Url, len(urls))
+			for _, r := range urls {
+				nextUrls = append(nextUrls, Url(r))
+			}
+
+			results <- CrawlResponse{
+				Urls: nextUrls,
+			}
 		}
 	}
 }
 
-func (w *Worker) processItem(endpoint string) (string, error) {
-	rand := rand.Intn(100)
+func (w *Worker) crawlEndpoint(url Url) ([]string, error) {
+	defer w.wg.Done()
 
-	if rand < 50 {
-		return "", fmt.Errorf("random error")
+	client := http.Client{
+		Timeout: 5 * time.Second,
 	}
 
-	return "result " + strconv.Itoa(rand), nil
+	response, err := client.Get(string(url))
+	if err != nil {
+		return nil, err
+	}
+
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	results := xurls.Strict.FindAllString(string(body), -1)
+	return results, nil
 }
